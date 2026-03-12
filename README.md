@@ -1,6 +1,6 @@
-# Collection Game Engine
+# Draft Game Engine
 
-A configurable engine for solving single-player collection/knapsack-style games using expectimax search.
+A configurable engine for solving single-player drafting (e.g. drafting cards/athletes) games using expectimax search.
 
 ## The game
 
