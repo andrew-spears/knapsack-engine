@@ -1,6 +1,5 @@
 # Draft Game Engine
 
-<<<<<<< HEAD
 A configurable engine for solving single-player drafting (e.g. drafting cards/athletes) games using expectimax search.
 =======
 A configurable engine for solving single-player collection/knapsack-style games using expectimax search, with iterative neural network training (Expert Iteration).
