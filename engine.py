@@ -228,11 +228,13 @@ def expand_tree(stashed, remaining, depth, fanout, config, score_table):
 
 
 class Engine:
-    def __init__(self, depth, fanout, config=None, leaf_fn=None):
+    def __init__(self, depth, fanout, config=None, leaf_fn=None, array_leaf_fn=None):
         """
         leaf_fn: optional callable that takes a list of (stashed, remaining, is_terminal)
                  tuples and returns a list of float values. If provided, uses
                  expand_tree + leaf_fn for batched evaluation instead of numba _search.
+        array_leaf_fn: optional callable (stashed_arr, remaining_arr) -> values_arr
+                 for array-based batched evaluation via search_roots_batch.
         """
         if config is None:
             config = GameConfig()
@@ -242,6 +244,7 @@ class Engine:
         self.score_table = config.make_score_table()
         self.node_count = 0
         self.leaf_fn = leaf_fn
+        self.array_leaf_fn = array_leaf_fn
 
     def search_value(self, stashed, remaining):
         cfg = self.config
@@ -279,6 +282,31 @@ class Engine:
             )
             self.node_count += nodes
             return val
+
+    def search_roots_batch(self, root_s, root_r):
+        """Batch search over multiple root states using array-based expansion.
+
+        root_s, root_r: (N, num_types) int64 arrays.
+        Returns: (values, num_leaves) where values is (N,) float32.
+        Requires array_leaf_fn for non-terminal leaves.
+        """
+        cfg = self.config
+        leaf_s, leaf_r, actual_depth = expand_to_leaves(
+            root_s, root_r, self.depth, self.fanout, cfg
+        )
+        num_leaves = len(leaf_s)
+
+        is_terminal = int(leaf_r[0].sum()) < cfg.draw_size
+        if is_terminal or self.array_leaf_fn is None:
+            leaf_vals = batch_score_from_table(leaf_s, self.score_table).astype(np.float32)
+        else:
+            leaf_vals = self.array_leaf_fn(leaf_s, leaf_r)
+
+        num_roots = len(root_s)
+        root_vals = propagate_leaf_values(
+            leaf_vals, num_roots, actual_depth, self.fanout, cfg.num_bundles
+        )
+        return root_vals, num_leaves
 
     def get_action(self, transitions):
         best_action = 0

@@ -20,19 +20,23 @@ import os
 import time
 import numpy as np
 import torch
-from game import GameConfig, sample_transitions
-from engine import Engine, expand_to_leaves, propagate_leaf_values, batch_score_from_table
-from model import make_leaf_fn, load_model
+from game import GameConfig, sample_transitions, play_games_batched
+from engine import Engine, expand_to_leaves
+from model import make_leaf_fn, make_array_leaf_fn, load_model
+
+# Prevent fork deadlock with PyTorch's internal thread pools
+mp.set_start_method("spawn", force=True)
 
 
 # --- Batched worker (--leaf-model): array-based expansion, lockstep across games ---
 
 def worker_batched(args):
     worker_id, num_games, depth, fanout, leaf_model_path = args
+    torch.set_num_threads(1)
     config = GameConfig.small()
     model = load_model(leaf_model_path, config)
-    score_table = config.make_score_table()
-    pool_norm = np.maximum(np.array(config.init_pool, dtype=np.float32), 1.0)
+    array_leaf_fn = make_array_leaf_fn(model, config)
+    engine = Engine(depth, fanout, config, array_leaf_fn=array_leaf_fn)
     B = config.num_bundles
     T = config.num_types
 
@@ -42,77 +46,26 @@ def worker_batched(args):
     max_memory = 500 * 1024 * 1024  # 500 MB per worker
     chunk_size = max(1, min(num_games, max_memory // (leaves_per_game * bytes_per_leaf)))
 
-    # Accumulate training data as arrays
-    sample_stashed = np.empty((0, T), dtype=np.int32)
-    sample_remaining = np.empty((0, T), dtype=np.int32)
-    sample_values = np.empty(0, dtype=np.float32)
+    all_stashed, all_remaining, all_values = [], [], []
     total_leaves = 0
     games_done = 0
 
     for chunk_start in range(0, num_games, chunk_size):
         n = min(chunk_size, num_games - chunk_start)
-
-        # Initialize chunk of games
-        stashed = np.zeros((n, T), dtype=np.int64)
-        remaining = np.tile(np.array(config.init_pool, dtype=np.int64), (n, 1))
-
-        for round_idx in range(config.num_rounds):
-            deck_size = int(remaining[0].sum())
-            if deck_size < config.draw_size:
-                break
-
-            # Sample transitions for all games in this chunk
-            root_s = np.empty((n * B, T), dtype=np.int64)
-            root_r = np.empty((n * B, T), dtype=np.int64)
-            for g in range(n):
-                transitions, _, _ = sample_transitions(
-                    tuple(stashed[g]), tuple(remaining[g]), config
-                )
-                for b, (s, r) in enumerate(transitions):
-                    idx = g * B + b
-                    root_s[idx] = s
-                    root_r[idx] = r
-
-            # Expand all roots to leaves via numba
-            leaf_s, leaf_r, actual_depth = expand_to_leaves(
-                root_s, root_r, depth, fanout, config
-            )
-            total_leaves += len(leaf_s)
-
-            # Evaluate leaves
-            is_terminal = int(leaf_r[0].sum()) < config.draw_size
-            if is_terminal:
-                leaf_vals = batch_score_from_table(leaf_s, score_table).astype(np.float32)
-            else:
-                s_norm = leaf_s.astype(np.float32) / pool_norm
-                r_norm = leaf_r.astype(np.float32) / pool_norm
-                X = torch.tensor(np.concatenate([s_norm, r_norm], axis=1), dtype=torch.float32)
-                with torch.no_grad():
-                    leaf_vals = model(X).numpy()
-
-            # Backup: reshape + max/mean -> one value per root
-            num_roots = n * B
-            root_vals = propagate_leaf_values(leaf_vals, num_roots, actual_depth, fanout, B)
-            game_vals = root_vals.reshape(n, B)
-
-            # Record all transitions as training data
-            sample_stashed = np.concatenate([sample_stashed, root_s.astype(np.int32)])
-            sample_remaining = np.concatenate([sample_remaining, root_r.astype(np.int32)])
-            sample_values = np.concatenate([sample_values, game_vals.ravel()])
-
-            # Advance each game using best action
-            best = game_vals.argmax(axis=1)
-            for g in range(n):
-                idx = g * B + best[g]
-                stashed[g] = root_s[idx]
-                remaining[g] = root_r[idx]
+        result = play_games_batched(n, engine, config, collect_data=True)
+        all_stashed.append(result["stashed"])
+        all_remaining.append(result["remaining"])
+        all_values.append(result["values"])
+        total_leaves += result["total_leaves"]
 
         games_done += n
-        if games_done % max(1, num_games // 5) < chunk_size or games_done == num_games:
+        if games_done % max(1, num_games // 10) < chunk_size or games_done == num_games:
+            total_samples = sum(len(v) for v in all_values)
             print(f"  Worker {worker_id}: {games_done}/{num_games} games, "
-                  f"{len(sample_values)} samples, {total_leaves:,} leaves")
+                  f"{total_samples} samples, {total_leaves:,} leaves")
 
-    return sample_stashed, sample_remaining, sample_values, total_leaves
+    return (np.concatenate(all_stashed), np.concatenate(all_remaining),
+            np.concatenate(all_values), total_leaves)
 
 
 # --- Sequential worker (no --leaf-model): fast numba search ---
@@ -163,14 +116,17 @@ def worker_sequential(args):
 def main():
     p = argparse.ArgumentParser(description="Generate training data with parallel search")
     p.add_argument("--games", type=int, default=5000)
-    p.add_argument("--depth", type=int, default=3)
-    p.add_argument("--fanout", type=int, default=20)
+    p.add_argument("--depth", type=int, default=2)
+    p.add_argument("--fanout", type=int, default=10)
     p.add_argument("--workers", type=int, default=None, help="Defaults to half of cpu count")
     p.add_argument("--leaf-model", type=str, default=None, help="Model .pt file for NN leaf evaluation")
-    p.add_argument("--out", type=str, default="data.npz")
+    p.add_argument("--out", type=str, default=None)
     args = p.parse_args()
 
     config = GameConfig.small()
+    if args.out is None:
+        samples_est = args.games * config.num_rounds * config.num_bundles
+        args.out = f"data/d{args.depth}_f{args.fanout}_{samples_est // 1000}k.npz"
     n_workers = args.workers or mp.cpu_count() // 2
     games_per_worker = args.games // n_workers
     remainder = args.games % n_workers

@@ -113,6 +113,25 @@ def make_heuristic_leaf_fn(config):
     return leaf_fn
 
 
+def make_array_leaf_fn(model, config):
+    """Create a leaf_fn for array-based batched evaluation.
+
+    Returns callable: (stashed_arr, remaining_arr) -> values_arr
+    where inputs are (N, num_types) int64 arrays and output is (N,) float32.
+    Terminal detection is handled by the caller (Engine).
+    """
+    pool_norm = _pool_norm(config)
+
+    def leaf_fn(stashed, remaining):
+        s_norm = stashed.astype(np.float32) / pool_norm
+        r_norm = remaining.astype(np.float32) / pool_norm
+        X = torch.tensor(np.concatenate([s_norm, r_norm], axis=1), dtype=torch.float32)
+        with torch.no_grad():
+            return model(X).numpy()
+
+    return leaf_fn
+
+
 def greedy_nn_action(model, transitions, config):
     """Pick best action using NN value predictions (no search)."""
     X = encode_state_tuples(transitions, config)

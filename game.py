@@ -184,3 +184,70 @@ def play_game(config, action_fn, verbose=False):
     if verbose:
         print(f"  Score: {score:.0f}")
     return score
+
+
+def play_games_batched(n, engine, config, collect_data=False):
+    """Play n games in lockstep using Engine.search_roots_batch.
+
+    Returns dict with:
+        scores: (n,) float array of final scores
+        total_leaves: int, total leaves evaluated
+    If collect_data=True, also includes:
+        stashed: (S, num_types) int32 array of all root transitions
+        remaining: (S, num_types) int32 array
+        values: (S,) float32 array of search values per transition
+    """
+    B = config.num_bundles
+    T = config.num_types
+    score_table = config.make_score_table()
+    total_leaves = 0
+
+    stashed = np.zeros((n, T), dtype=np.int64)
+    remaining = np.tile(np.array(config.init_pool, dtype=np.int64), (n, 1))
+
+    if collect_data:
+        all_stashed = []
+        all_remaining = []
+        all_values = []
+
+    for round_idx in range(config.num_rounds):
+        deck_size = int(remaining[0].sum())
+        if deck_size < config.draw_size:
+            break
+
+        root_s = np.empty((n * B, T), dtype=np.int64)
+        root_r = np.empty((n * B, T), dtype=np.int64)
+        for g in range(n):
+            transitions, _, _ = sample_transitions(
+                tuple(stashed[g]), tuple(remaining[g]), config
+            )
+            for b, (s, r) in enumerate(transitions):
+                idx = g * B + b
+                root_s[idx] = s
+                root_r[idx] = r
+
+        root_vals, num_leaves = engine.search_roots_batch(root_s, root_r)
+        total_leaves += num_leaves
+        game_vals = root_vals.reshape(n, B)
+
+        if collect_data:
+            all_stashed.append(root_s.astype(np.int32))
+            all_remaining.append(root_r.astype(np.int32))
+            all_values.append(game_vals.ravel())
+
+        best = game_vals.argmax(axis=1)
+        for g in range(n):
+            idx = g * B + best[g]
+            stashed[g] = root_s[idx]
+            remaining[g] = root_r[idx]
+
+    scores = np.array([
+        total_score_from_table(stashed[g], score_table) for g in range(n)
+    ])
+
+    result = {"scores": scores, "total_leaves": total_leaves}
+    if collect_data:
+        result["stashed"] = np.concatenate(all_stashed)
+        result["remaining"] = np.concatenate(all_remaining)
+        result["values"] = np.concatenate(all_values).astype(np.float32)
+    return result
