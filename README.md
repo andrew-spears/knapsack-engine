@@ -45,26 +45,10 @@ Iterative Expert Iteration loop: search generates training data, NN learns to pr
 
 ### Workflow
 
-**Generate data on remote (many CPUs):**
-```bash
-./run_iterate.sh -g 5000 -d 2 -f 10 -w 32 -r 5
-# or standalone: python run_datagen.py --games 10000 --depth 2 --fanout 10
-```
-
-**Sync data to local:**
-```bash
-./sync_local.sh              # pulls data/ and models/ from remote
-```
-
-**Train locally (M1 GPU):**
+**Train:**
 ```bash
 python run_train.py data/d2_f10_r*.npz --output models/my_model.pt --epochs 200
 # auto-detects MPS/CUDA, saves loss plot as model_loss.png
-```
-
-**Push code to remote:**
-```bash
-./sync_remote.sh
 ```
 
 ### File naming convention
