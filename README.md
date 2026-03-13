@@ -1,9 +1,6 @@
 # Draft Game Engine
 
 A configurable engine for solving single-player drafting (e.g. drafting cards/athletes) games using expectimax search.
-=======
-A configurable engine for solving single-player collection/knapsack-style games using expectimax search, with iterative neural network training (Expert Iteration).
-
 
 ## The game
 
@@ -15,6 +12,92 @@ A **pool** contains known quantities of goods across several types. Each round:
 4. Repeat until the pool is exhausted.
 
 The player's score is determined by the counts of each type they've collected, evaluated by a configurable scoring function.
+
+## Example
+
+An example game playthrough from `demo.py`:
+
+```
+GAME CONFIG:
+=================================
+Num types: 5
+Pool (num goods of each type):
+  Type 1: 8
+  Type 2: 7
+  Type 3: 6
+  Type 4: 5
+  Type 5: 4
+Goods drawn per round: 5
+Bundles per draw: 4
+Overlap (number of bundles each good appears in): 2
+Rounds: 6
+=================================
+
+SCORING RULE:
+=================================
+def power_two_score(type_value, count):
+    '''Default scoring: 2 pays face value, 4 pays double, others pay negative.'''
+    if count == 0:
+        return 0
+    if count == 2:
+        return 2 * type_value
+    if count == 4:
+        return 8 * type_value
+    return -type_value * count
+=================================
+
+Playing game with engine search (depth=3, fanout=10)...
+  Round 1: drew [4 4 1 1 3]
+           bundle 0: 4 4 1 3 >>>
+           bundle 1: 1
+           bundle 2: 1 3
+           bundle 3: 4 4 1
+  Stash:     [ 1   0   1   2   0]
+  Remaining: [ 6   7   5   3   4]
+
+  Round 2: drew [2 5 1 4 2]
+           bundle 0: 5 1 4 2 >>>
+           bundle 1: 1
+           bundle 2: 2
+           bundle 3: 2 5 4 2
+  Stash:     [ 2   1   1   3   1]
+  Remaining: [ 5   5   5   2   3]
+
+  Round 3: drew [1 1 4 2 1]
+           bundle 0: 1 >>>
+           bundle 1: 2 1
+           bundle 2: 1 1 4 2 1
+           bundle 3: 1 4
+  Stash:     [ 3   1   1   3   1]
+  Remaining: [ 2   4   5   1   3]
+
+  Round 4: drew [3 1 2 5 2]
+           bundle 0: 1 2 5 2 >>>
+           bundle 1: 3 1 2 5
+           bundle 2: 2
+           bundle 3: 3
+  Stash:     [ 4   3   1   3   2]
+  Remaining: [ 1   2   4   1   2]
+
+  Round 5: drew [5 3 2 2 5]
+           bundle 0: 3 2 5
+           bundle 1: 2
+           bundle 2: 5 3 2
+           bundle 3: 5 2 5 >>>
+  Stash:     [ 4   4   1   3   4]
+  Remaining: [ 1   0   3   1   0]
+
+  Round 6: drew [3 1 3 4 3]
+           bundle 0: 1
+           bundle 1: 3 1 3 4 3 >>>
+           bundle 2: 3
+           bundle 3: 3 4 3
+  Stash:     [ 5   4   4   4   4]
+  Remaining: [ 0   0   0   0   0]
+
+  Score: 107
+  Nodes searched: 774564, avg 129094.0 per move
+```
 
 ## Configuration
 
@@ -33,43 +116,35 @@ All game parameters live in `GameConfig`:
 
 ## Search engine
 
-Expectimax search alternates chance nodes (random draws, averaged over Monte Carlo samples) and decision nodes (pick best bundle). `depth` controls lookahead rounds, `fanout` controls Monte Carlo samples per chance node.
+The goal of the engine is to pick the best action (bundle) given the current stash and remaining pool. This reduces to evaluating the value of a given state (stash + remaining) and picking the bundle that leads to the best expected value after the next random draw.
+We do this using expectimax search, which expands a game tree alternating between chance nodes (random draws, averaged over Monte Carlo samples) and decision nodes (pick best bundle). `depth` controls lookahead rounds, `fanout` controls Monte Carlo samples per chance node. At the leaves of this tree, we use a value function to estimate the expected final score from that state. This can be a simple heuristic or a learned neural network. We then propagate these values up the tree to make the best decision at the root.
 
-Two search paths in `Engine`:
-- **`search_value(stashed, remaining)`** — single root state. Uses numba `_search` (heuristic leaf) or Python `expand_tree` + `leaf_fn` (NN leaf).
+`Engine` has two search methods:
+
+- **`search_value(stashed, remaining)`** — single root state. Uses numba `_search` to traverse the tree with a simple heuristic function, or Python `expand_tree` + `leaf_fn` to expand all leaves, evaluate the leaf function (e.g. a neural network) on all at once, then propagate values up.
 - **`search_roots_batch(root_s, root_r)`** — many roots at once. Uses numba `expand_to_leaves` + `array_leaf_fn`. Much faster for data generation and benchmarking.
 
 ## Neural network training
 
-Iterative Expert Iteration loop: search generates training data, NN learns to predict search values, NN becomes the leaf evaluator for better search.
+A fairly good initial approach is to use search with the actual score function as our leaf value function. To improve this, we need a better value function on the leaves. To this end, we can train a neural network to predict the search value of states. This effectively distills the search into a fast-to-evaluate function, which can then be used as the leaf function to emulate a deeper search at very little extra computation cost. Extrapolating this, we can run an expert iteration loop: search generates training data in batches, NN learns to predict search values, NN becomes the leaf evaluator for better search.
 
-### Workflow
+### Basic workflow
 
-**Train:**
-```bash
-python run_train.py data/d2_f10_r*.npz --output models/my_model.pt --epochs 200
-# auto-detects MPS/CUDA, saves loss plot as model_loss.png
-```
+**Generate data with search:**
+
+`run_datagen.py --games {games} --depth {depth} --fanout {fanout} --leaf-model [model.pt]`
+
+Generates `games` games in parallel with the given search parameters, saves states and search values to .npz files as supervised training examples. If `--leaf-model` is provided, uses that NN as the leaf function instead of the default heuristic.
+
+**Train NN on generated data:**
+
+`run_train.py [data.npz] --epochs {epochs} --hidden {hidden_size} --layers {num_layers}`
+
+Trains a model with the given architecture on the provided data, saves model to .pt file.
 
 ### File naming convention
 
 Data lives in `data/`, models in `models/`. Files encode search parameters:
-- Data: `data/d{depth}_f{fanout}_r{round}.npz` (e.g. `data/d2_f10_r3.npz`)
-- Models: `models/d{depth}_f{fanout}_r{round}.pt` (e.g. `models/d2_f10_r3.pt`)
-- Standalone datagen default: `data/d{depth}_f{fanout}_{samples}k.npz`
 
-## Files
-
-| File | Description |
-| --- | --- |
-| `game.py` | `GameConfig`, scoring, bundle assignment, transition sampling |
-| `engine.py` | Expectimax search: numba `_search`, array-based `expand_to_leaves`, `Engine` class |
-| `model.py` | `ValueNet`, leaf function factories (`make_leaf_fn`, `make_array_leaf_fn`), model save/load |
-| `run_datagen.py` | Parallel data generation with multiprocessing. Uses `spawn` to avoid PyTorch fork deadlocks |
-| `run_train.py` | Train from .npz files, saves loss plot, auto-detects GPU |
-| `run_iterate.sh` | Full iterative training loop (datagen → train → repeat) |
-| `benchmark.py` | Benchmark search strategies at various depths, with optional NN model |
-| `fanout_variance.py` | Measure search value variance as function of fanout |
-| `test_prediction.py` | Test NN prediction accuracy vs search values |
-| `sync_remote.sh` | Push code to remote server |
-| `sync_local.sh` | Pull data/models from remote server |
+- Data: `data/d{depth}_f{fanout}_{num_samples}.npz` (e.g. `data/d2_f10_240k.npz`)
+- Models: derived from data file, e.g. `data/d2_f10_240k.npz -> models/d2_f10_240k_h128_l4_e50.pt`
