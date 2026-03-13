@@ -148,3 +148,7 @@ Data lives in `data/`, models in `models/`. Files encode search parameters:
 
 - Data: `data/d{depth}_f{fanout}_{num_samples}.npz` (e.g. `data/d2_f10_240k.npz`)
 - Models: derived from data file, e.g. `data/d2_f10_240k.npz -> models/d2_f10_240k_h128_l4_e50.pt`
+
+## Future ideas
+
+- **Cross-type combo scoring**: Replace per-type score table with pattern-based scoring. A combo is a `(pattern_vector, points)` pair — score = `min(stashed // pattern)` over nonzero entries, times points. e.g. "5 points for each complete set of types 2,3,7" → pattern `[0,1,1,0,0,0,1,0,0,0]`, points=5. Can also encode current count-based scoring: "pairs of type 3" → pattern `[0,0,2,0,...]`. Precompute patterns into a 2D array, score in numba with one min-reduction per pattern.
