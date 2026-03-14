@@ -193,7 +193,7 @@ def play_game(config, action_fn, verbose=False):
 
 
 def play_games_batched(n, engine, config, collect_data=False):
-    """Play n games in lockstep using Engine.search_roots_batch.
+    """Play n games in lockstep using Engine.search_value_batch.
 
     Returns dict with:
         scores: (n,) float array of final scores
@@ -232,7 +232,7 @@ def play_games_batched(n, engine, config, collect_data=False):
                 root_s[idx] = s
                 root_r[idx] = r
 
-        root_vals, num_leaves = engine.search_roots_batch(root_s, root_r)
+        root_vals, num_leaves = engine.search_value_batch(root_s, root_r)
         total_leaves += num_leaves
         game_vals = root_vals.reshape(n, B)
 

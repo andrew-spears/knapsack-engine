@@ -9,8 +9,8 @@ import numpy as np
 import torch
 from game import GameConfig, sample_transitions
 from engine import (Engine, expand_to_leaves, propagate_leaf_values,
-                    batch_score_from_table, expand_tree)
-from model import ValueNet, make_leaf_fn, load_model, encode_state_tuples
+                    batch_score_from_table)
+from model import ValueNet, load_model, encode_state_tuples
 
 
 def test_backup_simple():

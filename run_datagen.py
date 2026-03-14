@@ -22,7 +22,7 @@ import numpy as np
 import torch
 from game import GameConfig, sample_transitions, play_games_batched
 from engine import Engine, expand_to_leaves
-from model import make_leaf_fn, make_array_leaf_fn, load_model
+from model import make_array_leaf_fn, load_model
 
 # Prevent fork deadlock with PyTorch's internal thread pools
 mp.set_start_method("spawn", force=True)
@@ -144,32 +144,24 @@ def main():
     dummy_r = np.array([config.init_pool], dtype=np.int64)
     expand_to_leaves(dummy_s, dummy_r, args.depth, args.fanout, config)
 
-    # Benchmark with the path that will actually run
+    # Benchmark: time one game via batched path
     t_bench = time.time()
-    n_bench = 20
+    n_bench = 5
     if args.leaf_model:
         bench_model = load_model(args.leaf_model, config)
-        bench_leaf_fn = make_leaf_fn(bench_model, config)
-        bench_engine = Engine(args.depth, args.fanout, config, leaf_fn=bench_leaf_fn)
-        for _ in range(n_bench):
-            bench_engine.search_value(config.init_stashed, config.init_pool)
+        bench_engine = Engine(args.depth, args.fanout, config,
+                              array_leaf_fn=make_array_leaf_fn(bench_model, config))
     else:
-        for _ in range(n_bench):
-            engine.search_value(config.init_stashed, config.init_pool)
-    secs_per_call = (time.time() - t_bench) / n_bench
+        bench_engine = Engine(args.depth, args.fanout, config)
+    for _ in range(n_bench):
+        play_games_batched(1, bench_engine, config)
+    secs_per_game = (time.time() - t_bench) / n_bench
 
     rounds = config.num_rounds
-    calls_per_game = rounds * config.num_bundles
-    total_calls = args.games * calls_per_game
-    est_serial = total_calls * secs_per_call
-    est_parallel = est_serial / n_workers
-    print(f"Benchmark: {secs_per_call*1000:.1f}ms/search call")
-    print(f"Estimate: {args.games} games x ~{rounds} rounds x {config.num_bundles} bundles "
-          f"= ~{total_calls:,} search calls")
+    est_parallel = args.games * secs_per_game / n_workers
+    print(f"Benchmark: {secs_per_game*1000:.0f}ms/game")
     print(f"Estimated time: ~{est_parallel:.0f}s ({est_parallel/60:.1f}min) "
           f"across {n_workers} workers")
-    if args.leaf_model:
-        print(f"  (batched mode will be faster than this estimate)")
 
     worker_fn = worker_batched if args.leaf_model else worker_sequential
     worker_args = []

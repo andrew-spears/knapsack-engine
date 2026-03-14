@@ -3,7 +3,7 @@ import numpy as np
 import time
 from game import GameConfig, play_game, play_games_batched
 from engine import Engine
-from model import load_model, make_leaf_fn, make_array_leaf_fn, greedy_nn_action
+from model import load_model, make_array_leaf_fn, greedy_nn_action
 
 
 config = GameConfig.small()

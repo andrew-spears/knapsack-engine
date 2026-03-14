@@ -60,59 +60,6 @@ def encode_state_tuples(states, config):
     return torch.tensor(np.array(rows), dtype=torch.float32)
 
 
-def make_leaf_fn(model, config):
-    """Create a leaf_fn that uses the NN for non-terminal states.
-
-    Returns a callable: list of (stashed, remaining, is_terminal) -> list of floats.
-    Terminal states are evaluated with score_table; non-terminal states get a
-    single batched forward pass through the model.
-    """
-    score_table = config.make_score_table()
-
-    def leaf_fn(leaves):
-        n = len(leaves)
-        values = [0.0] * n
-        nn_indices = []
-        nn_states = []
-
-        for i, (stashed, remaining, is_terminal) in enumerate(leaves):
-            if is_terminal:
-                stashed_arr = np.array(stashed, dtype=np.int64)
-                values[i] = float(total_score_from_table(stashed_arr, score_table))
-            else:
-                nn_indices.append(i)
-                nn_states.append((stashed, remaining))
-
-        if nn_states:
-            X = encode_state_tuples(nn_states, config)
-            with torch.no_grad():
-                preds = model(X).cpu().numpy()
-            for j, idx in enumerate(nn_indices):
-                values[idx] = float(preds[j])
-
-        return values
-
-    return leaf_fn
-
-
-def make_heuristic_leaf_fn(config):
-    """Create a leaf_fn that uses score_table for all states (terminal or not).
-
-    Useful as a baseline: equivalent logic to the numba _search path but
-    executed through the batched expand_tree infrastructure.
-    """
-    score_table = config.make_score_table()
-
-    def leaf_fn(leaves):
-        values = []
-        for stashed, remaining, is_terminal in leaves:
-            stashed_arr = np.array(stashed, dtype=np.int64)
-            values.append(float(total_score_from_table(stashed_arr, score_table)))
-        return values
-
-    return leaf_fn
-
-
 def make_array_leaf_fn(model, config):
     """Create a leaf_fn for array-based batched evaluation.
 

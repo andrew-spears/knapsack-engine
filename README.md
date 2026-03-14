@@ -122,7 +122,7 @@ We do this using expectimax search, which expands a game tree alternating betwee
 `Engine` has two search methods:
 
 - **`search_value(stashed, remaining)`** — single root state. Uses numba `_search` to traverse the tree with a simple heuristic function, or Python `expand_tree` + `leaf_fn` to expand all leaves, evaluate the leaf function (e.g. a neural network) on all at once, then propagate values up.
-- **`search_roots_batch(root_s, root_r)`** — many roots at once. Uses numba `expand_to_leaves` + `array_leaf_fn`. Much faster for data generation and benchmarking.
+- **`search_value_batch(root_s, root_r)`** — many roots at once. Uses numba `expand_to_leaves` + `array_leaf_fn`. Much faster for data generation and benchmarking.
 
 ## Neural network training
 

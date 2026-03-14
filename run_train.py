@@ -18,9 +18,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
-from game import GameConfig, play_game
+from game import GameConfig, play_game, play_games_batched
 from engine import Engine
-from model import (ValueNet, make_leaf_fn, make_heuristic_leaf_fn,
+from model import (ValueNet, make_array_leaf_fn,
                    save_model, load_model, greedy_nn_action, encode_state_arrays)
 
 
@@ -86,11 +86,12 @@ def train(model, stashed, remaining, values, config, epochs, batch_size, lr, dev
 
 
 def evaluate(config, model, n_games):
-    engine_nn = Engine(2, 10, config, leaf_fn=make_leaf_fn(model, config))
-    engine_heur = Engine(2, 10, config, leaf_fn=make_heuristic_leaf_fn(config))
+    array_leaf_fn = make_array_leaf_fn(model, config)
+    engine_nn = Engine(2, 10, config, array_leaf_fn=array_leaf_fn)
+    engine_heur = Engine(2, 10, config)
 
-    search_nn = [play_game(config, engine_nn.get_action) for _ in range(n_games)]
-    search_heur = [play_game(config, engine_heur.get_action) for _ in range(n_games)]
+    search_nn = play_games_batched(n_games, engine_nn, config)["scores"]
+    search_heur = play_games_batched(n_games, engine_heur, config)["scores"]
     nn_only = [play_game(config, lambda t: greedy_nn_action(model, t, config)) for _ in range(n_games)]
     random_scores = [play_game(config, lambda t: np.random.randint(len(t))) for _ in range(n_games)]
 
